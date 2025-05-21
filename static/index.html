@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Demand Forecaster</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
+        .container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        h1 { color: #333; text-align: center; }
+        .input-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input[type="file"], select, input[type="number"] {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover { background-color: #0056b3; }
+        #results { margin-top: 20px; padding: 10px; border: 1px solid #eee; border-radius: 4px; background-color: #f9f9f9; }
+        #chartContainer { margin-top: 20px; }
+        .error { color: red; font-weight: bold; }
+        .success { color: green; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Demand Forecaster</h1>
+
+        <div class="input-group">
+            <label for="fileInput">Upload Sales Data (CSV, Excel, TXT):</label>
+            <input type="file" id="fileInput" accept=".csv, .xls, .xlsx, .txt">
+        </div>
+
+        <div class="input-group">
+            <label for="modelSelect">Select Forecasting Model:</label>
+            <select id="modelSelect"></select>
+        </div>
+
+        <div class="input-group">
+            <label for="horizonInput">Forecasting Horizon (periods):</label>
+            <input type="number" id="horizonInput" value="12" min="1">
+        </div>
+
+        <button id="forecastButton">Get Forecast</button>
+
+        <div id="results">
+            <p>Upload a file and click "Get Forecast" to see results.</p>
+        </div>
+
+        <div id="chartContainer">
+            <canvas id="salesChart"></canvas>
+        </div>
+    </div>
+
+    <script>
+        let salesChartInstance = null; // To hold the chart instance
+
+        window.addEventListener('load', () => {
+            fetchModels();
+            document.getElementById('forecastButton').addEventListener('click', handleForecast);
+        });
+
+        async function fetchModels() {
+            const resultsDiv = document.getElementById('results');
+            try {
+                const response = await fetch('/models');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const data = await response.json();
+                const modelSelect = document.getElementById('modelSelect');
+                modelSelect.innerHTML = ''; // Clear existing options
+                if (data.models && data.models.length > 0) {
+                    data.models.forEach(modelName => {
+                        const option = document.createElement('option');
+                        option.value = modelName;
+                        option.textContent = modelName;
+                        modelSelect.appendChild(option);
+                    });
+                } else {
+                    resultsDiv.innerHTML = '<p class="error">No forecasting models available from server.</p>';
+                }
+            } catch (error) {
+                console.error('Error fetching models:', error);
+                resultsDiv.innerHTML = `<p class="error">Error fetching models: ${error.message}. Ensure the backend is running.</p>`;
+            }
+        }
+
+        async function handleForecast() {
+            const fileInput = document.getElementById('fileInput');
+            const modelSelect = document.getElementById('modelSelect');
+            const horizonInput = document.getElementById('horizonInput');
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = '<p>Processing...</p>'; // Clear previous results
+
+            const file = fileInput.files[0];
+            const selectedModel = modelSelect.value;
+            const horizonValue = parseInt(horizonInput.value, 10);
+
+            if (!file) {
+                resultsDiv.innerHTML = '<p class="error">Please select a file.</p>';
+                return;
+            }
+            if (!selectedModel) {
+                resultsDiv.innerHTML = '<p class="error">Please select a model.</p>';
+                return;
+            }
+            if (isNaN(horizonValue) || horizonValue <= 0) {
+                resultsDiv.innerHTML = '<p class="error">Please enter a valid positive horizon value.</p>';
+                return;
+            }
+
+            // Step 1: Upload the file
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const uploadResponse = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const uploadResult = await uploadResponse.json();
+                console.log('Upload response:', uploadResult);
+
+                if (!uploadResponse.ok) {
+                    throw new Error(uploadResult.error || `File upload failed with status: ${uploadResponse.status}`);
+                }
+                resultsDiv.innerHTML = `<p class="success">File uploaded successfully: ${uploadResult.message}</p>`;
+
+                // Step 2: Get the forecast
+                resultsDiv.innerHTML += '<p>Fetching forecast...</p>';
+                const forecastPayload = {
+                    model_name: selectedModel,
+                    horizon: horizonValue
+                };
+
+                const forecastResponse = await fetch('/forecast', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(forecastPayload)
+                });
+
+                const forecastResult = await forecastResponse.json();
+                console.log('Forecast response:', forecastResult);
+
+                if (!forecastResponse.ok) {
+                    throw new Error(forecastResult.error || `Forecast request failed with status: ${forecastResponse.status}`);
+                }
+                
+                displayForecastData(forecastResult);
+
+            } catch (error) {
+                console.error('Error during forecast process:', error);
+                resultsDiv.innerHTML = `<p class="error">Error: ${error.message}</p>`;
+            }
+        }
+
+        function displayForecastData(data) {
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = `<h3>Forecast Results for ${data.model_used} (Horizon: ${data.horizon_periods})</h3>`;
+
+            // Display historical data
+            if (data.historical_data && data.historical_data.length > 0) {
+                resultsDiv.innerHTML += '<h4>Historical Data:</h4><ul>';
+                data.historical_data.slice(-10).forEach(item => { // Show last 10 historical points for brevity
+                    resultsDiv.innerHTML += `<li>Date: ${new Date(item.date).toLocaleDateString()}, Sales: ${item.sales.toFixed(2)}</li>`;
+                });
+                resultsDiv.innerHTML += '</ul>';
+            } else {
+                resultsDiv.innerHTML += '<p>No historical data to display.</p>';
+            }
+
+            // Display forecasted data
+            if (data.forecasted_data && data.forecasted_data.length > 0) {
+                resultsDiv.innerHTML += '<h4>Forecasted Data:</h4><ul>';
+                data.forecasted_data.forEach(item => {
+                    resultsDiv.innerHTML += `<li>Date: ${new Date(item.date).toLocaleDateString()}, Forecast: ${item.forecasted_value.toFixed(2)}</li>`;
+                });
+                resultsDiv.innerHTML += '</ul>';
+            } else {
+                resultsDiv.innerHTML += '<p>No forecast data to display.</p>';
+            }
+            
+            renderChart(data.historical_data, data.forecasted_data);
+        }
+        
+        function renderChart(historicalData, forecastedData) {
+            const chartContainer = document.getElementById('chartContainer');
+            const ctx = document.getElementById('salesChart').getContext('2d');
+
+            if (!historicalData || !forecastedData) {
+                chartContainer.innerHTML = '<p>Not enough data to render chart.</p>';
+                return;
+            }
+
+            if (salesChartInstance) {
+                salesChartInstance.destroy(); // Destroy existing chart instance
+            }
+
+            const historicalLabels = historicalData.map(item => new Date(item.date).toLocaleDateString());
+            const historicalSales = historicalData.map(item => item.sales);
+
+            const forecastLabels = forecastedData.map(item => new Date(item.date).toLocaleDateString());
+            const forecastValues = forecastedData.map(item => item.forecasted_value);
+            
+            // Combine labels for a continuous X-axis if possible, or handle distinct periods
+            // For simplicity, this chart shows historical and forecast potentially on overlapping or distinct time periods
+            // A more advanced chart might merge these into a single timeline.
+
+            // For this version, we'll plot them as potentially separate datasets on the same chart area
+            // but it's better if their x-axes are aligned or combined.
+            // Let's try to create a combined timeline
+            const allLabels = [...new Set([...historicalLabels, ...forecastLabels])].sort((a,b) => new Date(a) - new Date(b));
+            
+            const combinedHistoricalSales = allLabels.map(label => {
+                const index = historicalLabels.indexOf(label);
+                return index !== -1 ? historicalSales[index] : null;
+            });
+
+            const combinedForecastValues = allLabels.map(label => {
+                const index = forecastLabels.indexOf(label);
+                return index !== -1 ? forecastValues[index] : null;
+            });
+
+
+            salesChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: allLabels,
+                    datasets: [
+                        {
+                            label: 'Historical Sales',
+                            data: combinedHistoricalSales,
+                            borderColor: 'rgb(75, 192, 192)',
+                            backgroundColor: 'rgba(75, 192, 192, 0.5)',
+                            tension: 0.1,
+                            spanGaps: true, // Connect points with nulls in between
+                        },
+                        {
+                            label: 'Forecasted Sales',
+                            data: combinedForecastValues,
+                            borderColor: 'rgb(255, 99, 132)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.5)',
+                            tension: 0.1,
+                            spanGaps: true, // Connect points with nulls in between
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Date'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Sales / Forecasted Value'
+                            },
+                            beginAtZero: false 
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                        },
+                        title: {
+                            display: true,
+                            text: 'Sales and Forecast Over Time'
+                        }
+                    }
+                }
+            });
+        }
+
+    </script>
+</body>
+</html>
